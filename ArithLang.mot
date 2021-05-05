@@ -1,0 +1,80 @@
+#MotmotB
+
+#load $Parser.Extended$
+
+new data Exp  = Num  Num
+                Bool Bool
+                Add  Exp Exp
+                IsZ  Exp
+                If   Exp Exp Exp
+new data Type = TNum
+                TBool
+
+-- Overkill to write a full parser, but it'll make the test
+-- cases prettier.
+parse : String -> Exp
+...   = Prelude.Parser.run (delayed exp)
+        where (exp   : ParserLazy Exp) = lazy-parse p-if ||| delayed exp-h
+              (exp-h : ParserLazy Exp) = lazy-parse p-isz ||| p-add ||| delayed exp-s
+              (exp-s : ParserLazy Exp) = lazy-parse p-num ||| p-bool ||| p-brack
+              (p-num : Parser Exp)     = rexp $[0-9]+$ >>> (read{ Num } >> Num)
+              (p-bool : Parser Exp)    = (txt $true$ >>> const{ () } True) ||| (txt $false$ >>> const{ () } False) >>> Bool
+              (p-add : Parser Exp)     = delayed exp-s <== txt $+$ <=> delayed exp-h >>> uncurry Add
+              (p-isz : Parser Exp)     = txt $0?$ ==> delayed exp-s >>> IsZ
+              (p-if : Parser Exp)      = txt $if$ ==> delayed exp-h <== txt $then$ <=> delayed exp-h <== txt $else$ <=> delayed exp-h >>> uncurry3 If
+              (p-brack : Parser Exp)   = bracketed (delayed exp)
+        using Prelude.Parser
+
+infer                                          : Exp -> Type
+... (Num (_ : Num))                            = TNum
+... (Bool (_ : Bool))                          = TBool
+... (Add (infer \ TNum) (infer \ TNum))        = TNum
+... (IsZ (infer \ TNum))                       = TBool
+... (If (infer \ TBool) (e2 : Exp) (e3 : Exp)) = case infer e2 | infer e3
+                                                   (t : Type) `t -> t
+
+eval                                                      : Exp -> Exp
+... (Add (eval \ Num (n1 : Num)) (eval \ Num (n2 : Num))) = Num (n1 + n2)
+... (IsZ ((eval >> ((Num 0) == _)) \ (b : Bool)))         = Bool b
+... (If (eval \ Bool (b : Bool)) (e2 : Exp) (e3 : Exp))   = if b
+                                                               then eval e2
+                                                               else eval e3
+... (v : Exp)                                             = v
+
+typedef TestCase = (String, Maybe String)
+
+mixfix 120 _ ~~> _
+mixfix 155 _ ~~bad
+~~>                             : String -> String -> TestCase
+... (s1 : String) (s2 : String) = s1 |-> Just s2
+~~bad                           : String -> TestCase
+...                             = {String} |-> Nothing{ String }
+
+test-cases : [ TestCase ]
+...        = [ $3$                         ~~> $3$,
+               $true$                      ~~> $true$,
+               $2 + 3$                     ~~> $5$,
+               $1 + 1 + 1$                 ~~> $3$,
+               $2 + true$                  ~~bad,
+               $0? 0$                      ~~> $true$,
+               $0? 3$                      ~~> $false$,
+               $0? true$                   ~~bad,
+               $if true then 0 else 1$     ~~> $0$,
+               $if 0? 0 then 1 + 1 else 0$ ~~> $2$,
+               $if 0 then 1 else 2$        ~~bad
+             ]
+
+run-one                                  : TestCase -> ()
+... ((s : String), (res : Maybe String)) = try if tv =/= te or Just v =/= res'
+                                                  then fail{ () } Fail!
+                                               where (te : Type) = infer e
+                                                     (v : Exp)   = eval e
+                                                     (tv : Type) = infer v
+                                               recover
+                                                 (err : Tree) -> if Nothing{ Exp } =/= res'
+                                                                    then fail{ () } BadTestCase!
+                                           where (e : Exp)          = parse s
+                                                 (res' : Maybe Exp) = map-maybe parse res
+run                                      : () -> ()
+... ()                                   = let strict () = iter run-one test-cases
+                                           print $The coast is clear!$
